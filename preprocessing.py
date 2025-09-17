@@ -9,7 +9,31 @@ Intended to be used with Hugging Face `datasets.Dataset` / `DatasetDict`.
 """
 
 import re
+import pandas as pd
 from datasets import Dataset, DatasetDict
+
+# ----------------------------------------------------------------------
+# Deduplication (exact duplicates by `response`)
+# ----------------------------------------------------------------------
+
+def dedup_by_response(ds: Dataset, col: str = "response", keep: str = "first") -> Dataset:
+    """
+    Drop exact duplicate rows by `col` (default: 'response'), keeping the first.
+    No extra checks. Exact match (case/spacing preserved).
+    """
+    df = ds.to_pandas()
+    df = df.drop_duplicates(subset=col, keep=keep).reset_index(drop=True)
+    return Dataset.from_pandas(df, preserve_index=False)
+
+def dedup(ds_or_dd, col: str = "response", keep: str = "first"):
+    """
+    Dedup for Dataset or DatasetDict (per split).
+    """
+    if isinstance(ds_or_dd, DatasetDict):
+        return DatasetDict({name: dedup_by_response(split, col=col, keep=keep)
+                            for name, split in ds_or_dd.items()})
+    else:
+        return dedup_by_response(ds_or_dd, col=col, keep=keep)
 
 # ----------------------------------------------------------------------
 # Regular Expressions for Cleaning
@@ -193,18 +217,19 @@ def _apply(ds: Dataset, min_len: int, max_len: int) -> Dataset:
     """Apply cleaning + length filter to a single Dataset split."""
     ds = ds.map(map_clean, batched=True, desc="clean")
     ds = ds.filter(lambda ex: min_len<= ex["response_length"] <= max_len, desc=f"{min_len} <= len <= {max_len}")
+    ds = dedup_by_response(ds, col="response", keep="first")
     return ds
 
 
-def apply_pipeline(ds_or_dd, min_len: int = 70, max_len: int = 2000):
+def apply_pipeline(ds_or_dd, min_len: int = 70, max_len: int = 2000, dedup: bool = True):
     """
     Apply the full cleaning pipeline to either a Dataset or DatasetDict.
-    Filters out responses shorter than `min_len`, longer than `max_len`.
+    - Cleans text, filters by length, and (by default) drops exact duplicate `response`s.
     """
     if isinstance(ds_or_dd, DatasetDict):
-        return DatasetDict({name: _apply(split, min_len, max_len) for name, split in ds_or_dd.items()})
+        return DatasetDict({name: _apply(split, min_len, max_len, dedup) for name, split in ds_or_dd.items()})
     else:
-        return _apply(ds_or_dd, min_len, max_len)
+        return _apply(ds_or_dd, min_len, max_len, dedup)
 
 def explode_pairs(batch):
     """
@@ -263,6 +288,7 @@ def unify_bt_batch(batch, mapping_list):
 
 __all__ = [
     "clean_once", "clean_only", "apply_pipeline",
-    "explode_dataset", "unify_bt_batch",
+    "explode_dataset", "unify_bt_batch", "dedup", "dedup_by_response",
     "BT_UNIFIED_MAP", "RLHF_UNIFIED_MAP",
+
 ]
