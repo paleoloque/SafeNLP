@@ -289,23 +289,7 @@ def nonzero_share(s):
     m = s.notna()
     return (s.ne(0) & m).mean()
 
-
-def nonzero_median(s):
-    """Median of non-zero, non-missing values; NaN if none."""
-    nz = s[(s != 0) & s.notna()]
-    return np.nan if nz.empty else nz.median()
-
-
-def nonzero_mean(s):
-    """Mean of non-zero, non-missing values; NaN if none."""
-    nz = s[(s != 0) & s.notna()]
-    return np.nan if nz.empty else nz.mean()
-
-
-# Make names stable
 nonzero_share.__name__  = "nonzero_share"
-nonzero_median.__name__ = "nonzero_median"
-nonzero_mean.__name__   = "nonzero_mean"
 
 
 def summarize_engineered_by_class(
@@ -316,17 +300,11 @@ def summarize_engineered_by_class(
     precomputed,
 ):
     """
-    Compute per-class summary statistics (mean/std/median/etc.) for engineered features.
+    Compute per-class summary statistics (mean/non_zero_share) for engineered features.
 
     If `precomputed` (feature matrix) is provided, spaCy is not re-run.
     Otherwise, the function fits and transforms using `arts.engineered`.
 
-    Returns
-    -------
-    pd.DataFrame
-        Wide table with hierarchical stats flattened into columns:
-        <feature>__<stat>, where stat ∈ {mean, std, nonzero_share, nonzero_median,
-        nonzero_mean, max, count}.
     """
     if precomputed is None:
         arts.engineered.fit(df)
@@ -344,7 +322,7 @@ def summarize_engineered_by_class(
     keep = [c for c in eng_df.columns if c != label_col]
     summary = (
         eng_df.groupby(label_col)[keep]
-              .agg(["mean","std", nonzero_share, nonzero_median, nonzero_mean, "max", "count"])
+              .agg(["mean", nonzero_share])
               .copy()
     )
     summary.columns = [f"{feat}__{stat}" for feat, stat in summary.columns]
