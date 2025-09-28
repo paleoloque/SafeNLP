@@ -25,6 +25,7 @@ py -3.11 -m venv venv-safenlp
 
 python -m pip install -U pip
 pip install -r requirements.txt
+python -m spacy download en_core_web_sm
 ```
 For Linux (bash):
 ```bash
@@ -36,6 +37,7 @@ source venv-safenlp/Scripts/activate
 
 python -m pip install -U pip
 pip install -r requirements.txt
+python -m spacy download en_core_web_sm
 ```
 ## Reference
 This project makes use of the **BeaverTails** and **Safe-RLHF** datasets:
