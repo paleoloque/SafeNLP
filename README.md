@@ -3,7 +3,7 @@
 SafeNLP is a research-oriented project for detecting potentially unsafe or harmful language in question–answer pairs.
 The repository provides:
 
-+ `download_models.py`: Pre-trained models (LightGBM + Word2Vec), stored in GitHub Releases, with a pipeline to download them for inference model testing
++ `download_models.py`, `model_pipeline.py`: Pre-trained models (LightGBM + Word2Vec), stored in GitHub Releases, with a pipeline to download them for inference model testing
 
 + `preprocessing.py`, `feature_extraction.py`: Preprocessing, feature extraction pipelines (linguistic, lexical, semantic heuristics)
 
