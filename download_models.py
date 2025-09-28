@@ -14,9 +14,10 @@ FILES = {
     "threshold.txt":     f"{BASE}/threshold.txt",
 }
 
-os.makedirs("artifacts2", exist_ok=True)
+os.makedirs("artifacts", exist_ok=True)
 for name, url in FILES.items():
-    dst = os.path.join("artifacts2", name)
+    dst = os.path.join("artifacts", name)
     print("->", dst)
     urllib.request.urlretrieve(url, dst)
+
 print("Done.")
