@@ -212,8 +212,6 @@ eng = UnifiedEngineeredFeatures(
         text_col=TEXT_COL,
         spacy_model="en_core_web_sm",
         features=["pos","modal","ratios","imperative","profanity","negation","ner"],
-        binarize_counts=True,
-        normalize_ratios=True,
         n_process=2,
         batch_size=1024,
         return_sparse=False,
@@ -222,8 +220,8 @@ eng = UnifiedEngineeredFeatures(
 eng.fit(pd.DataFrame({TEXT_COL: [""]}))
 
 def predict_one(text, booster, wv, eng=eng, thr = 0.5):
-    """Predict class for a single text.
-    Returns: (pred_bool: bool, pred_int: int, label: str, proba: float)
+    """
+    Predict class for a single text.
     """
     tokens = [simple_tok(text)]
     W2V = docs_to_matrix(tokens, wv, modes=POOL_MODES)
@@ -237,8 +235,10 @@ def predict_one(text, booster, wv, eng=eng, thr = 0.5):
     label     = "Is safe: True" if pred_bool else "Is safe: False"
     return pred_bool, pred_int, label, proba
 
-def predict_many(texts, booster, wv, eng=None, thr = 0.5):
-    """Predict classes and probabilities for multiple texts."""
+def predict_many(texts, booster, wv, eng=eng, thr=0.5):
+    """
+    Predict classes and probabilities for multiple texts.
+    """
     tokens = [simple_tok(t) for t in texts]
     W2V = docs_to_matrix(tokens, wv, modes=POOL_MODES)
     if eng is not None:
@@ -246,10 +246,11 @@ def predict_many(texts, booster, wv, eng=None, thr = 0.5):
         X_eng = eng.transform(df_tmp)
     else:
         X_eng = sparse.csr_matrix((len(texts), 0), dtype=np.float32)
-    X = sparse.hstack([X_eng, sparse.csr_matrix(W2V)], format="csr")
-    proba = booster.predict(X, num_iteration=booster.best_iteration)
-    pred = (proba >= thr).astype(int)
-    return pred, proba
 
-# Example usage:
-# booster = run_pipeline(train_df, val_df, X_eng_tr, X_eng_va)
+    X = sparse.hstack([X_eng, sparse.csr_matrix(W2V)], format="csr")
+    probas = booster.predict(X, num_iteration=getattr(booster, "best_iteration", None))
+    pred_bools = (probas >= thr)
+    pred_ints = pred_bools.astype(int)
+    labels = ["Is safe: True" if b else "Is safe: False" for b in pred_bools]
+
+    return list(map(bool, pred_bools)), pred_ints, labels, probas
