@@ -7,9 +7,10 @@ The repository provides:
 
 + `preprocessing.py`, `feature_extraction.py`: Preprocessing, feature extraction pipelines (linguistic, lexical, semantic heuristics)
 
-+ `Safe_NLP.ipynb`: Python notebook for evaluation and demonstration
++ [`Safe_NLP.ipynb`](Documents/SafeNLP_Notebook.ipynb): Python notebook for evaluation and demonstration
 
 The system predicts whether a given response is safe or unsafe in terms of general public safety.
+More on approach and results you can discover from the [research paper](Documents/Detecting_Harmful_Instructions_via_Interpretable_Feature_Analysis._A_Hybrid_Approach.pdf).
 
 ## Installation
 
