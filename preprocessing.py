@@ -7,288 +7,239 @@ adapted and specified to BeaverTails and SafeRLHF local challenging points.
 
 Intended to be used with Hugging Face `datasets.Dataset` / `DatasetDict`.
 """
-
-import re
+import re, ast, unicodedata
 import pandas as pd
-from datasets import Dataset, DatasetDict
+import numpy as np
 
-# ----------------------------------------------------------------------
-# Deduplication (exact duplicates by `response`)
-# ----------------------------------------------------------------------
+# 
+# Regular expressions for text cleaning
+# 
 
-def dedup_by_response(ds: Dataset, col: str = "response", keep: str = "first") -> Dataset:
-    """
-    Drop exact duplicate rows by `col` (default: 'response'), keeping the first.
-    No extra checks. Exact match (case/spacing preserved).
-    """
-    df = ds.to_pandas()
-    df = df.drop_duplicates(subset=col, keep=keep).reset_index(drop=True)
-    return Dataset.from_pandas(df, preserve_index=False)
+# Generic "end-of-message" markers (e.g., "eom", "end of response")
+EOM_GENERIC_RE = re.compile(r"""
+    ^\s* [^\w\s]{0,6}\s* (?:eom|end)\b (?:\s+of\s+(?:output|response))? [^\n]*$
+""", re.IGNORECASE | re.MULTILINE | re.VERBOSE)
 
-def dedup(ds_or_dd, col: str = "response", keep: str = "first"):
-    """
-    Dedup for Dataset or DatasetDict (per split).
-    """
-    if isinstance(ds_or_dd, DatasetDict):
-        return DatasetDict({name: dedup_by_response(split, col=col, keep=keep)
-                            for name, split in ds_or_dd.items()})
-    else:
-        return dedup_by_response(ds_or_dd, col=col, keep=keep)
+# Triple quotes (often indicate truncation)
+TRIPLEQ_RE  = re.compile(r'"""')
 
-# ----------------------------------------------------------------------
-# Regular Expressions for Cleaning
-# ----------------------------------------------------------------------
+# "Instruction:" headings with optional numbering prefix
+INSTR_RE    = re.compile(r"\b\d+\s*\.?\s*Instruction\s*:", re.IGNORECASE)
 
-# Detects generic "end of output/response" markers (e.g. "EOM", "End of Response")
-EOM_GENERIC_RE = re.compile(
-    r"""
-    ^\s*                       
-    [^\w\s]{0,6}\s*            
-    (?:eom|end)\b              
-    (?:\s+of\s+(?:output|response))? 
-    [^\n]*$                   
-    """,
-    re.IGNORECASE | re.MULTILINE | re.VERBOSE,
-)
+# Emoji ranges
+EMOJI_RE    = re.compile("["
+    "\U0001F600-\U0001F64F" "\U0001F300-\U0001F5FF" "\U0001F680-\U0001F6FF"
+    "\U0001F1E0-\U0001F1FF" "\U00002700-\U000027BF" "\U0001F900-\U0001F9FF"
+    "\U00002600-\U000026FF" "]+", re.UNICODE)
 
-# Detects triple quotes (possible truncation markers)
-TRIPLEQ_RE = re.compile(r'"""')
-
-# Detects "Instruction:" headings with optional numbering
-INSTR_RE = re.compile(r"\b\d+\s*\.?\s*Instruction\s*:", re.IGNORECASE)
-
-# Emoji ranges (various Unicode blocks)
-EMOJI_RE = re.compile(
-    "[" 
-    "\U0001F600-\U0001F64F" 
-    "\U0001F300-\U0001F5FF"  
-    "\U0001F680-\U0001F6FF"  
-    "\U0001F1E0-\U0001F1FF" 
-    "\U00002700-\U000027BF"  
-    "\U0001F900-\U0001F9FF"  
-    "\U00002600-\U000026FF"  
-    "]+",
-    re.UNICODE,
-)
-
-
-# Personal information masking
-EMAIL_RE = re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b")
-PHONE_RE = re.compile(r"\b(?:\+?\d[\d\s().-]{6,}\d)\b")
-
-# URL detectors
+# PII and URL detectors
+EMAIL_RE    = re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b")
+PHONE_RE    = re.compile(r"\b(?:\+?\d[\d\s().-]{6,}\d)\b")
 URL_PROTO_RE  = re.compile(r"https?://[^\s)>\]]+", re.IGNORECASE)
 URL_WWW_RE    = re.compile(r"(?<!@)\bwww\.[^\s)>\]]+", re.IGNORECASE)
 URL_DOMAIN_RE = re.compile(r"\b(?:[a-z0-9-]+\.)+(?-i:[a-z]{2,})(?:/[^\s)>\]]*)?", re.IGNORECASE)
 
-# ----------------------------------------------------------------------
-# Category Mapping Dictionaries (for both BeaverTails and SafeRLHF)
-# ----------------------------------------------------------------------
+# Zero-width characters
+_ZW_RE = re.compile(r"[\u200B-\u200D\u2060\uFEFF]")
 
+# 
+# Category unification maps
+# Keys = unified categories; values = source-category names to OR together
+# 
 BT_UNIFIED_MAP = {
     "Violence and Threats": [
-        "violence,aiding_and_abetting,incitement",
-        "child_abuse",
-        "animal_abuse",
-        "self_harm",
+        "violence,aiding_and_abetting,incitement","child_abuse","animal_abuse","self_harm",
     ],
     "Crime and Illegal Activities": [
-        "financial_crime,property_crime,theft",
-        "drug_abuse,weapons,banned_substance",
-        "terrorism,organized_crime",
+        "financial_crime,property_crime,theft","drug_abuse,weapons,banned_substance","terrorism,organized_crime",
     ],
     "Hate Speech and Discrimination": [
-        "hate_speech,offensive_language",
-        "discrimination,stereotype,injustice",
+        "hate_speech,offensive_language","discrimination,stereotype,injustice",
     ],
     "Sexual Content": ["sexually_explicit,adult_content"],
     "Privacy Violations": ["privacy_violation"],
     "Misinformation and Manipulation": [
-        "misinformation_regarding_ethics,laws_and_safety",
-        "non_violent_unethical_behavior",
-        "controversial_topics,politics",
+        "misinformation_regarding_ethics,laws_and_safety","non_violent_unethical_behavior","controversial_topics,politics",
     ],
 }
 
 RLHF_UNIFIED_MAP = {
-    "Violence and Threats": [
-        "Endangering National Security",
-        "Violence",
-        "Human Trafficking",
-        "Physical Harm",
-        "Animal Abuse",
-    ],
-    "Crime and Illegal Activities": [
-        "Drugs",
-        "Economic Crime",
-        "Cybercrime",
-        "White-Collar Crime",
-        "Disrupting Public Order",
-        "Environmental Damage",
-    ],
-    "Hate Speech and Discrimination": ["Insulting Behavior", "Discriminatory Behavior"],
+    "Violence and Threats": ["Endangering National Security","Violence","Human Trafficking","Physical Harm","Animal Abuse"],
+    "Crime and Illegal Activities": ["Drugs","Economic Crime","Cybercrime","White-Collar Crime","Disrupting Public Order","Environmental Damage"],
+    "Hate Speech and Discrimination": ["Insulting Behavior","Discriminatory Behavior"],
     "Sexual Content": ["Sexual Content"],
     "Privacy Violations": ["Privacy Violation"],
-    "Misinformation and Manipulation": [
-        "Mental Manipulation",
-        "Copyright Issues",
-        "Psychological Harm",
-        "Endangering Public Health",
-    ],
+    "Misinformation and Manipulation": ["Mental Manipulation","Copyright Issues","Psychological Harm","Endangering Public Health"],
 }
 
-# ----------------------------------------------------------------------
-# Cleaning Utilities
-# ----------------------------------------------------------------------
-
-def cut_early(text: str) -> str:
-    """Cut off text at the first occurrence of an 'end of output' marker or triple quotes."""
-    spots = []
-    for rx in (EOM_GENERIC_RE, TRIPLEQ_RE):
-        m = rx.search(text)
-        if m:
-            spots.append(m.start())
-    return text[: min(spots)].rstrip() if spots else text
-
-
-def cut_instruction(text: str) -> str:
-    """Remove trailing 'Instruction:' sections if present."""
-    m = INSTR_RE.search(text)
-    return text[: m.start()].rstrip() if m else text
-
-
-def strip_trailing_non_word(t: str) -> str:
+# 
+# Helpers
+# 
+def _norm_key(s):
     """
-    Strip trailing non-word characters but preserve a single final period.
-    Example:
-        'Hello!!!'   -> 'Hello'
-        'Hello....'  -> 'Hello.'
-        'Hello).'    -> 'Hello.'
+    Normalize text for duplicate detection:
+    - NFKC normalize, replace NBSP
+    - remove zero-width chars
+    - collapse whitespace, lowercase, strip
+    """
+    if s is None: return ""
+    s = unicodedata.normalize("NFKC", str(s)).replace("\u00A0", " ")
+    s = _ZW_RE.sub("", s)
+    s = re.sub(r"\s+", " ", s).strip().lower()
+    return s
+
+def _strip_trailing_non_word(t):
+    """
+    Remove trailing non-word punctuation; keep a single terminal dot if present.
     """
     if re.search(r"\.[^\w]*$", t):
         return re.sub(r"[^\w]*$", "", t)
     return re.sub(r"\W+$", "", t)
 
+def _clean_once(t):
+    """
+    One-pass cleaner for a response:
+    - Cut at generic EOM markers or triple quotes if present
+    - Remove emojis
+    - Cut off at an 'Instruction:' heading if present
+    - Mask emails/phones
+    - Replace URLs with [LINK]
+    - Ensure a space after periods before capital letters (e.g., 'a.B' -> 'a. B')
+    - Trim trailing punctuation and collapse whitespace
+    """
+    if not t: return ""
+    t = str(t)
 
-def clean_once(t: str) -> str:
-    """
-    Apply one round of cleaning to a single text string:
-      - remove end markers, instructions, emojis
-      - mask emails, phones, URLs
-      - drop illegal chars
-      - normalize spacing
-      - strip trailing punctuation
-    """
-    if not t:
-        return ""
-    t = cut_early(t)
+    # Truncate at EOM markers or triple quotes (choose earliest cut)
+    m1 = EOM_GENERIC_RE.search(t)
+    m2 = TRIPLEQ_RE.search(t)
+    cut_pos = min([m.start() for m in [m1, m2] if m] or [None]) if (m1 or m2) else None
+    if cut_pos is not None:
+        t = t[:cut_pos].rstrip()
+
+    # Strip emojis
     t = EMOJI_RE.sub("", t)
-    t = cut_instruction(t)
+
+    # Truncate at "Instruction:"
+    m = INSTR_RE.search(t)
+    if m: t = t[:m.start()].rstrip()
+
+    # Mask PII
     t = EMAIL_RE.sub(" [EMAIL] ", t)
     t = PHONE_RE.sub(" [PHONE] ", t)
+
+    # Replace any URL with [LINK]
     for rx in (URL_PROTO_RE, URL_WWW_RE, URL_DOMAIN_RE):
         t = rx.sub(" [LINK] ", t)
+
+    # Insert a space after a period before a capital letter (sentence boundary fix)
     t = re.sub(r"([a-z])(\.)([A-Z])", r"\1. \3", t)
-    t = strip_trailing_non_word(t)
+
+    # Tidy trailing punctuation and spaces
+    t = _strip_trailing_non_word(t)
     t = re.sub(r"\s+", " ", t).strip()
     return t
 
-
-def clean_only(x: str) -> str:
-    """Wrapper: apply clean_once and unwrap tuple if needed (defensive)."""
-    y = clean_once(x)
-    return y[0] if isinstance(y, tuple) else y
-
-
-# ----------------------------------------------------------------------
-# Dataset-Level Cleaning / Mapping Functions
-# ----------------------------------------------------------------------
-
-def map_clean(batch):
-    """Map clean_only() across batch['response'], returning cleaned texts + their lengths."""
-    cleaned = [clean_only(t) for t in batch["response"]]
-    return {
-        "response": cleaned,
-        "response_length": [len(t) for t in cleaned],
-    }
-
-
-def _apply(ds: Dataset, min_len: int, max_len: int) -> Dataset:
-    """Apply cleaning + length filter to a single Dataset split."""
-    ds = ds.map(map_clean, batched=True, desc="clean")
-    ds = ds.filter(lambda ex: min_len<= ex["response_length"] <= max_len, desc=f"{min_len} <= len <= {max_len}")
-    ds = dedup_by_response(ds, col="response", keep="first")
-    return ds
-
-
-def apply_pipeline(ds_or_dd, min_len: int = 70, max_len: int = 2000, dedup: bool = True):
+def _parse_dict_cell(v):
     """
-    Apply the full cleaning pipeline to either a Dataset or DatasetDict.
-    - Cleans text, filters by length, and (by default) drops exact duplicate `response`s.
+    Parse a cell that should hold a dict (e.g., category labels):
+    - Pass dicts through
+    - Try literal_eval on strings
+    - Fallback to empty dict
     """
-    if isinstance(ds_or_dd, DatasetDict):
-        return DatasetDict({name: _apply(split, min_len, max_len, dedup) for name, split in ds_or_dd.items()})
+    if isinstance(v, dict): return v
+    if pd.isna(v): return {}
+    s = str(v)
+    try: return ast.literal_eval(s)
+    except Exception: return {}
+
+def _unify_row(cat, is_safe_val, mapping):
+    """
+    Build a unified category dict for a single row:
+    - Initialize all unified categories to False
+    - If the instance is unsafe (is_safe==False), set a unified category True
+      if any of its source categories are True.
+    """
+    out = {k: False for k in mapping.keys()}
+    if not bool(is_safe_val):
+        for uni, src_list in mapping.items():
+            out[uni] = any(bool(cat.get(src, False)) for src in src_list)
+    return out
+
+# 
+# Main preprocessing pipeline
+# 
+def preprocess_df(
+    df: pd.DataFrame,
+    *,
+    mapping_scheme: str,   # "bt" | "rlhf"
+    drop_duplicates: bool = True,
+    min_len: int = 70,
+    max_len: int = 2000,
+):
+    """
+    Return a normalized DataFrame with columns:
+      ['id','prompt','response','is_safe','harm_category','response_length']
+
+    Steps:
+      1) Clean 'response' text once.
+      2) Filter by response length [min_len, max_len].
+      3) Unify harm categories:
+         - mapping_scheme='bt' expects source column 'category'
+         - mapping_scheme='rlhf' expects source column 'harm_category'
+         - For unsafe rows, each unified category is the OR over its mapped source categories.
+      4) Optional deduplication by normalized 'response' (after cleaning here; see note).
+      5) Add sequential 'id' (0..N-1).
+      6) Reorder/ensure output columns; fill missing with NaN or {} for 'harm_category'.
+
+    Notes:
+      - Requires columns: 'response', 'is_safe', and the appropriate source category column.
+      - Dedup uses a normalization key focusing on textual equivalence.
+    """
+    assert "response" in df.columns, "Column 'response' is required"
+    out = df.copy()
+
+    # cleaning
+    out["response"] = out["response"].map(_clean_once)
+
+    # length filter
+    out["response_length"] = out["response"].fillna("").astype(str).str.len()
+    out = out[(out["response_length"] >= min_len) & (out["response_length"] <= max_len)].reset_index(drop=True)
+
+    # category unification
+    if mapping_scheme == "bt":
+        mapping = BT_UNIFIED_MAP
+        src_col = "category"
+    elif mapping_scheme == "rlhf":
+        mapping = RLHF_UNIFIED_MAP
+        src_col = "harm_category"
     else:
-        return _apply(ds_or_dd, min_len, max_len, dedup)
+        raise ValueError("mapping_scheme must be 'bt' or 'rlhf'")
 
-def explode_pairs(batch):
-    """
-    Explode preference-style records (prompt + 2 responses) into
-    individual (prompt, response) rows.
-    """
-    prompts, responses, is_safe, categories, severity = [], [], [], [], []
+    # ensure is_safe is present and boolean
+    if "is_safe" not in out.columns:
+        raise ValueError("Column 'is_safe' is required")
+    isb = out["is_safe"].astype("boolean")
 
-    for i in range(len(batch["prompt"])):
-        # response_0
-        prompts.append(batch["prompt"][i])
-        responses.append(batch["response_0"][i])
-        is_safe.append(batch["is_response_0_safe"][i])
-        categories.append(batch["response_0_harm_category"][i])
-        severity.append(batch["response_0_severity_level"][i])
+    # parse source categories and create unified dict per row
+    cats = out[src_col].apply(_parse_dict_cell)
+    out["harm_category"] = [_unify_row(cats.iloc[i], bool(isb.iloc[i]), mapping) for i in range(len(out))]
 
-        # response_1
-        prompts.append(batch["prompt"][i])
-        responses.append(batch["response_1"][i])
-        is_safe.append(batch["is_response_1_safe"][i])
-        categories.append(batch["response_1_harm_category"][i])
-        severity.append(batch["response_1_severity_level"][i])
+    # deduplicate by normalized response (after cleaning in this pipeline)
+    if drop_duplicates:
+        key = out["response"].map(_norm_key)
+        keep_idx = (~key.duplicated(keep="first"))
+        out = out.loc[keep_idx].reset_index(drop=True)
 
-    return {
-        "prompt": prompts,
-        "response": responses,
-        "is_safe": is_safe,
-        "harm_category": categories,
-        "severity_level": severity,
-    }
+    # sequential id 0..N-1
+    out.insert(0, "id", np.arange(len(out)))
 
-def explode_dataset(ds: Dataset) -> Dataset:
-    """Explodes a dataset of paired responses into a flat dataset of single responses."""
-    return ds.map(explode_pairs, batched=True, remove_columns=ds.column_names)
+    # keep only required columns in fixed order; fill if missing
+    keep = ["id", "prompt", "response", "is_safe", "harm_category", "response_length"]
+    for c in keep:
+        if c not in out.columns:
+            out[c] = np.nan if c != "harm_category" else [{} for _ in range(len(out))]
+    out = out[keep]
 
+    return out
 
-def unify_bt_batch(batch, mapping_list):
-    """
-    Unify harm_category dictionaries.
-    mapping_list: dict[str, list[str]]
-        Maps unified domain names to the list of source labels.
-    """
-    out = []
-    for cats, is_safe in zip(batch["harm_category"], batch["is_safe"]):
-        new_dict = {k: False for k in list(mapping_list.keys())}
-        if not is_safe:
-            for domain, src_list in mapping_list.items():
-                new_dict[domain] = any(bool(cats.get(src, False)) for src in src_list)
-        out.append(new_dict)
-    return {"harm_category": out}
-
-
-# ----------------------------------------------------------------------
-# Public API
-# ----------------------------------------------------------------------
-
-__all__ = [
-    "clean_once", "clean_only", "apply_pipeline",
-    "explode_dataset", "unify_bt_batch", "dedup", "dedup_by_response",
-    "BT_UNIFIED_MAP", "RLHF_UNIFIED_MAP",
-
-]
