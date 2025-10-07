@@ -10,7 +10,7 @@ The repository provides:
 + [`Safe_NLP.ipynb`](Documents/SafeNLP_Notebook.ipynb): Python notebook for evaluation and demonstration
 
 The system predicts whether a given response is safe or unsafe in terms of general public safety.
-More on approach and results you can discover from the [research paper](Documents/Detecting Harmful Instructions via Interpretable Feature Analysis. A Hybrid Approach (revisited).pdf).
+More on approach and results you can discover from the [research paper](Documents/Detecting_Harmful_Instructions_via_Interpretable_Feature_Analysis._A_Hybrid_Approach_(revisited).pdf).
 
 ## Installation
 
